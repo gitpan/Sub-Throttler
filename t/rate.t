@@ -60,15 +60,15 @@ ok !$throttle->acquire('id5', 'key1', 1),
 
 #   * ресурсы освобождаются не через period, а когда текущее время кратно period
 
-$t = EV::periodic 0, 0.05, 0, sub { EV::break };
+$t = EV::periodic 0, 0.5, 0, sub { EV::break };
 EV::run;
-$t = EV::timer 0.045, 0, sub { EV::break };
+$t = EV::timer 0.3, 0, sub { EV::break };
 EV::run;
-$throttle = Sub::Throttler::Rate::EV->new(period => 0.05);
+$throttle = Sub::Throttler::Rate::EV->new(period => 0.5);
 $throttle->acquire('id1', 'key1', 1);
 ok !$throttle->acquire('id2', 'key1', 1),
     'resource was not released (time not multi-periodic)';
-$t = EV::timer 0.005, 0, sub { EV::break };
+$t = EV::timer 0.3, 0, sub { EV::break };
 EV::run;
 ok $throttle->acquire('id2', 'key1', 1),
     'resource released';

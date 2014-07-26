@@ -7,7 +7,7 @@ use feature ':5.10';
 use Carp;
 our @CARP_NOT = qw( Sub::Throttler );
 
-use version; our $VERSION = qv('0.1.0');    # REMINDER: update Changes
+use version; our $VERSION = qv('0.1.1');    # REMINDER: update Changes
 
 # REMINDER: update dependencies in Build.PL
 use Sub::Throttler qw( :plugin );
@@ -45,7 +45,7 @@ sub apply_to {
 sub apply_to_functions {
     my ($self, @func) = @_;
     my %func = map { $_ => DEFAULT_KEY }
-        map {/::/ms ? $_ : caller.q{::}.$_} @func;
+        map {/::/ms ? $_ : caller().q{::}.$_} @func;
     $self->apply_to(sub {
         my ($this, $name) = @_;
         return

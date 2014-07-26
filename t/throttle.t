@@ -712,7 +712,7 @@ is get_warn(), q{},
 #   * освобождает все ресурсы через release()
 
 package Sub::Throttler::Test;
-use Mojo::Base 'Sub::Throttler::Limit';
+use parent 'Sub::Throttler::Limit';
 sub release         { push @Result, 'release';        return shift->SUPER::release(@_);        }
 sub release_unused  { push @Result, 'release_unused'; return shift->SUPER::release_unused(@_); }
 package main;

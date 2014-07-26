@@ -22,13 +22,13 @@ name: Sub-Throttler
 provides:
   Sub::Throttler:
     file: lib/Sub/Throttler.pm
-    version: v0.1.0
+    version: v0.1.1
   Sub::Throttler::Limit:
     file: lib/Sub/Throttler/Limit.pm
-    version: v0.1.0
+    version: v0.1.1
   Sub::Throttler::Rate::EV:
     file: lib/Sub/Throttler/Rate/EV.pm
-    version: v0.1.0
+    version: v0.1.1
 requires:
   EV: 0
   Perl6::Export::Attrs: 0
@@ -36,4 +36,4 @@ requires:
   version: 0.77
 resources:
   license: http://www.opensource.org/licenses/mit-license.php
-version: v0.1.0
+version: v0.1.1
