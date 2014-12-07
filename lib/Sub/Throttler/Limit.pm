@@ -7,84 +7,30 @@ use feature ':5.10';
 use Carp;
 our @CARP_NOT = qw( Sub::Throttler );
 
-use version; our $VERSION = qv('0.1.1');    # REMINDER: update Changes
+use version; our $VERSION = qv('0.2.0');    # REMINDER: update Changes
 
 # REMINDER: update dependencies in Build.PL
-use Sub::Throttler qw( :plugin );
-
-
-use constant DEFAULT_KEY    => 'default';
+use parent qw( Sub::Throttler::algo );
+use Sub::Throttler qw( throttle_flush );
 
 
 sub new {
-    my $class = shift;
-    my $self = bless {@_}, ref $class || $class;
+    use warnings FATAL => qw( misc );
+    my ($class, %opt) = @_;
+    my $self = bless {
+        limit   => delete $opt{limit} // 1,
+        acquired=> {},  # { $id => { $key => $quantity, … }, … }
+        used    => {},  # { $key => $quantity, … }
+        }, ref $class || $class;
+    croak 'limit must be an unsigned integer' if $self->{limit} !~ /\A\d+\z/ms;
+    croak 'bad param: '.(keys %opt)[0] if keys %opt;
     return $self;
 }
 
 sub acquire {
     my ($self, $id, $key, $quantity) = @_;
-    croak sprintf '%s already acquired %s', $id, $key
-        if $self->{acquired}{$id} && exists $self->{acquired}{$id}{$key};
-    croak 'quantity must be positive' if $quantity <= 0;
-
-    my $used = $self->{used}{$key} || 0;
-    if ($used + $quantity > $self->limit) {
-        return;
-    }
-    $self->{used}{$key} = $used + $quantity;
-
-    $self->{acquired}{$id}{$key} = $quantity;
-    return 1;
-}
-
-sub apply_to {
-    goto &throttle_add;
-}
-
-sub apply_to_functions {
-    my ($self, @func) = @_;
-    my %func = map { $_ => DEFAULT_KEY }
-        map {/::/ms ? $_ : caller().q{::}.$_} @func;
-    $self->apply_to(sub {
-        my ($this, $name) = @_;
-        return
-            $this   ? undef
-          : @func   ? $func{$name}
-          :           DEFAULT_KEY
-          ;
-    });
-    return $self;
-}
-
-sub apply_to_methods {
-    my ($self, $class_or_obj, @func) = @_;
-    croak 'method must not contain ::' if grep {/::/ms} @func;
-    my %func = map { $_ => DEFAULT_KEY } @func;
-    if (1 == @_) {
-        $self->apply_to(sub {
-            my ($this) = @_;
-            return $this ? DEFAULT_KEY : undef;
-        });
-    } elsif (ref $class_or_obj) {
-        $self->apply_to(sub {
-            my ($this, $name) = @_;
-            return
-                !$this || !ref $this || $this != $class_or_obj  ? undef
-              : @func                                           ? $func{$name}
-              :                                                   DEFAULT_KEY
-              ;
-        });
-    } else {
-        $self->apply_to(sub {
-            my ($this, $name) = @_;
-            my $class = !$this ? q{} : ref $this || $this;
-            return
-                !$this || $class ne $class_or_obj   ? undef
-              : @func                               ? $func{$name}
-              :                                       DEFAULT_KEY
-              ;
-        });
+    if (!$self->try_acquire($id, $key, $quantity)) {
+        croak "$self: unable to acquire $quantity of resource '$key'";
     }
     return $self;
 }
@@ -92,10 +38,27 @@ sub apply_to_methods {
 sub limit {
     my ($self, $limit) = @_;
     if (1 == @_) {
-        return $self->{limit} // 1;
+        return $self->{limit};
     }
+    croak 'limit must be an unsigned integer' if $limit !~ /\A\d+\z/ms;
+    # OPTIMIZATION call throttle_flush() only if amount of available
+    # resources increased (i.e. limit was increased)
+    my $resources_increases = $self->{limit} < $limit;
     $self->{limit} = $limit;
-    throttle_flush();
+    if ($resources_increases) {
+        throttle_flush();
+    }
+    return $self;
+}
+
+sub load {
+    my ($class, $state) = @_;
+    croak 'bad state: wrong algorithm' if $state->{algo} ne __PACKAGE__;
+    my $v = version->parse($state->{version});
+    if ($v > $VERSION) {
+        carp 'restoring state saved by future version';
+    }
+    my $self = $class->new(limit=>$state->{limit});
     return $self;
 }
 
@@ -107,14 +70,32 @@ sub release_unused {
     return _release(@_);
 }
 
-sub used {
-    my ($self, $key, $quantity) = @_;
-    if (2 == @_) {
-        return $self->{used}{$key} || 0;
+sub save {
+    my ($self) = @_;
+    my $state = {
+        algo    => __PACKAGE__,
+        version => $VERSION->numify,
+        limit   => $self->{limit},
+        used    => $self->{used},
+        at      => time,
+    };
+    return $state;
+}
+
+sub try_acquire {
+    my ($self, $id, $key, $quantity) = @_;
+    croak sprintf '%s already acquired %s', $id, $key
+        if $self->{acquired}{$id} && exists $self->{acquired}{$id}{$key};
+    croak 'quantity must be positive' if $quantity <= 0;
+
+    my $used = $self->{used}{$key} || 0;
+    if ($used + $quantity > $self->{limit}) {
+        return;
     }
-    $self->{used}{$key} = 0+$quantity;
-    throttle_flush();
-    return $self;
+    $self->{used}{$key} = $used + $quantity;
+
+    $self->{acquired}{$id}{$key} = $quantity;
+    return 1;
 }
 
 sub _release {
@@ -168,7 +149,8 @@ throttle, and which resource name(s) and quantity(ies) of that resource(s)
 each function/method should acquire to run.
 
 In basic use case you'll use one instance and configure it using
-L</"apply_to_functions"> and/or L</"apply_to_methods"> helpers - which
+L<Sub::Throttler::algo/"apply_to_functions"> and/or
+L<Sub::Throttler::algo/"apply_to_methods"> helpers - which
 result in any throttled function/method will need C<1> resource named
 C<"default"> to run. This way you'll effectively use just one counter,
 which will increase when any throttled function/method run and decrease
@@ -189,9 +171,10 @@ functions/methods (C<limit> is usually set when you call L</"new">).
     sub run_background_task { ... }
 
 In advanced use case you may use many counters in one instance (by using
-L</"apply_to"> to define different resource names/quantities for different
-throttled functions/methods) and have many instances (with different
-C<limit>) throttling same or different functions/methods.
+L<Sub::Throttler::algo/"apply_to"> to define different resource
+names/quantities for different throttled functions/methods) and have many
+instances (with different C<limit>) throttling same or different
+functions/methods.
 
     my $throttle_tasks = Sub::Throttler::Limit->new(limit => 5);
     my $throttle_cpu   = Sub::Throttler::Limit->new(limit => 100);
@@ -203,13 +186,13 @@ C<limit>) throttling same or different functions/methods.
     $throttle_tasks->apply_to(sub {
         my ($this, $name, @param) = @_;
         if ($name eq 'small_task') {
-            return 'task', 1;
+            return { task => 1 };
         } elsif ($name eq 'normal_task') {
-            return 'task', 2;
+            return { task => 2 };
         } elsif ($name eq 'large_task') {
-            return 'task', 3;
+            return { task => 3 };
         } elsif ($name eq 'side_task') {
-            return 'side', 1;
+            return { side => 1 };
         }
         return;
     });
@@ -219,7 +202,7 @@ C<limit>) throttling same or different functions/methods.
     $throttle_cpu->apply_to(sub {
         my ($this, $name, @param) = @_;
         if ($name eq 'side_task') {
-            return 'default', $param[0];
+            return { default => $param[0] };
         }
         return;
     });
@@ -239,7 +222,10 @@ C<limit>) throttling same or different functions/methods.
 Nothing.
 
 
-=head1 INTERFACE 
+=head1 INTERFACE
+
+L<Sub::Throttler::Limit> inherits all methods from L<Sub::Throttler::algo>
+and implements the following ones.
 
 =over
 
@@ -252,13 +238,7 @@ Create and return new instance of this algorithm.
 
 Default C<limit> is C<1>.
 
-It won't affect throttling of your functions/methods until you'll call
-L</"apply_to_functions"> or L</"apply_to_methods"> or L</"apply_to">.
-
-You don't have to keep returned object alive after you've configured
-throttling by calling these apply_to methods (you may need to keep it only
-if you'll want to add more throttling later or to remove all throttling
-configured on this instance using L<Sub::Throttler/"throttle_del">.
+See L<Sub::Throttler::algo/"new"> for more details.
 
 =item limit
 
@@ -267,129 +247,25 @@ configured on this instance using L<Sub::Throttler/"throttle_del">.
 
 Get or modify current C<limit>.
 
-=back
+=item load
 
-=head2 Activate throttle for selected subrouties
+    my $throttle = Sub::Throttler::Limit->load($state);
 
-=over
+Create and return new instance of this algorithm.
 
-=item apply_to_functions
+Only L<limit> is restored. Information about acquired resources won't be
+restored because there is no way to release these resources later.
 
-    $throttle = $throttle->apply_to_functions;
-    $throttle = $throttle->apply_to_functions('func', 'Some::func2');
+See L<Sub::Throttler::algo/"load"> for more details.
 
-When called without params will apply to all functions with throttling
-support. When called with list of function names will apply to only these
-functions (if function name doesn't contain package name it will use
-caller's package for that name).
+=item save
 
-All affected functions will use C<1> resource named C<"default">.
+    my $state = $throttle->save();
 
-=item apply_to_methods
+Return current state of algorithm needed to restore it using L</"load">
+after application restart.
 
-    $throttle = $throttle->apply_to_methods;
-    $throttle = $throttle->apply_to_methods('Class');
-    $throttle = $throttle->apply_to_methods($object);
-    $throttle = $throttle->apply_to_methods(Class   => qw( method method2 ));
-    $throttle = $throttle->apply_to_methods($object => qw( method method2 ));
-
-When called without params will apply to all methods with throttling
-support. When called only with C<'Class'> or C<$object> param will apply
-to all methods of that class/object. When given list of methods will apply
-only to these methods.
-
-In C<'Class'> case will apply both to Class's methods and methods of any
-object of that Class.
-
-All affected methods will use C<1> resource named C<"default">.
-
-=item apply_to
-
-    $throttle = $throttle->apply_to(sub {
-        my ($this, $name, @params) = @_;
-        if (!$this) {
-            # it's a function, $name contains package:
-            # $name eq 'main::func'
-        }
-        elsif (!ref $this) {
-            # it's a class method:
-            # $this eq 'Class::Name'
-            # $name eq 'new'
-        }
-        else {
-            # it's an object method:
-            # $this eq $object
-            # $name eq 'method'
-        }
-        return undef;               # do no throttle it
-        return 'key';               # throttle it by acquiring 1 resource 'key'
-        return ('key',5);           # throttle it by acquiring 5 resources 'key'
-        return ['key1','key2'];     # throttle it by atomically acquiring:
-                                    #   1 resource 'key1' and 1 resource 'key2'
-        return (['k1','k2'],[2,5]); # throttle it by atomically acquiring:
-                                    #   2 resources 'k1' and 5 resources 'k2'
-    });
-
-This is most complex but also most flexible way to configure throttling -
-you can introspect what function/method and with what params was called
-and return which and how many resources it should acquire before run.
-
-=back
-
-=head2 Manual resource management
-
-It's unlikely you'll need to manually manage resources, but it's possible
-to do if you want this - just be careful because if you acquire and don't
-release resource used to throttle your functions/methods they may won't be
-run anymore.
-
-=over
-
-=item acquire
-
-    my $is_acquired = $throttle->acquire($id, $key, $quantity);
-
-The throttling engine uses C<Scalar::Util::refaddr($done)> for C<$id>
-(large number), so it's safe for you to use either non-numbers as C<$id>
-or refaddr() of your own variables.
-
-    $throttle->acquire('reserve', 'default', 3) || die;
-    $throttle->acquire('extra reserve', 'default', 1) || die;
-
-Will throw if some C<$key> will be acquired more than once by same C<$id>
-or C<$quantity> is non-positive.
-
-=item release
-
-    $throttle = $throttle->release($id);
-
-Release all resources previously acquired by one or more calls to
-L</"acquire"> using this C<$id>.
-
-=item release_unused
-
-    $throttle = $throttle->release_unused($id);
-
-Release all resources previously acquired by one or more calls to
-L</"acquire"> using this C<$id>.
-
-Treat these resources as unused, to make it possible to reuse them as soon
-as possible (this may or may not differ from L</"release"> depending on
-plugin/algorithms).
-
-=item used
-
-    my $quantity = $throttle->used($key);
-    $throttle->used($key, $quantity);
-
-You can use it to manually save and restore current limits between
-different executions of your app, when it makes sense. Consider restoring
-limits using L</"acquire">, otherwise it will be harder to release these
-resources later.
-
-Changing current quantity is probably very bad idea because if you
-decrease current value this may result in negative value after all
-currently acquired resource will be released.
+See L<Sub::Throttler::algo/"save"> for more details.
 
 =back
 

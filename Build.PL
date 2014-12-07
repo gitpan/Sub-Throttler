@@ -30,6 +30,8 @@ my $builder = $class->new(
         'version'               => '0.77',
         'Perl6::Export::Attrs'  => 0,
         'EV'                    => 0,
+        'AnyEvent'              => 0,
+        'Time::HiRes'           => 0,
     },
     test_requires => {
         'Test::More'            => 0,
@@ -39,6 +41,7 @@ my $builder = $class->new(
         'Test::Pod'             => '1.22',
         'Test::Pod::Coverage'   => '1.08',
         'Pod::Coverage'         => '0.18',
+        'JSON::XS'              => 0,
     },
 #     add_to_cleanup     => [ 'Sub-Throttler-*' ],
 );
